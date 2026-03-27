@@ -2,11 +2,11 @@
 #define TRANSPORT_SERVICE_H
 
 #include <Arduino.h>
-#include <functional>
 #include "ice_protocol.h"
 #include "ice_radio.h"
+#include "ice_service.h"
 
-class TransportService {
+class TransportService : public IceService {
 public:
     // High-level Data Transfer Object (DTO)
     // This abstracts away the underlying packet structure (Single vs Multipart)
@@ -19,11 +19,11 @@ public:
     };
 
     // Callback for when a message is fully received/reassembled
-    using MessageCallback = std::function<void(const Message&)>;
+    using MessageCallback = void (*)(const Message&, void* context);
 
     // Filter callback for Smart Broadcasts.
     // Returns true if 'nodeId' is interested in 'msgType'.
-    using BroadcastFilter = std::function<bool(uint8_t nodeId, uint16_t msgType)>;
+    using BroadcastFilter = bool (*)(uint8_t nodeId, uint16_t msgType, void* context);
 
     TransportService(IceRadio& radio);
 
@@ -31,7 +31,10 @@ public:
     void begin(uint8_t nodeId);
     
     // Maintenance loop (handles reassembly timeouts)
-    void update();
+    void loop() override;
+
+    // Check if the async multipart queue is currently transmitting
+    bool isBusy() const;
 
     // --- Egress (Sending) ---
     // Central routing method.
@@ -42,10 +45,10 @@ public:
 
     // --- Ingress (Receiving) ---
     // Register a listener for fully assembled messages
-    void onMessageReceived(MessageCallback callback);
+    void onMessageReceived(MessageCallback callback, void* context);
 
     // Inject the logic to determine if a node cares about a broadcast
-    void setBroadcastFilter(BroadcastFilter filter);
+    void setBroadcastFilter(BroadcastFilter filter, void* context);
 
     // Feed raw packets from the Radio into the Transport Layer
     // This is typically called from the Radio's callback
@@ -55,7 +58,9 @@ private:
     IceRadio& _radio;
     uint8_t _nodeId;
     MessageCallback _callback;
+    void* _callbackContext;
     BroadcastFilter _broadcastFilter;
+    void* _filterContext;
 
     // Multipart Reassembly State
     uint8_t* _mpBuffer;

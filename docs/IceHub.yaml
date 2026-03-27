@@ -1,0 +1,293 @@
+openapi: 3.0.0
+info:
+  title: IceHub Local API
+  description: REST API for managing the IceHub network and its connected remote nodes.
+  version: 1.0.0
+servers:
+  - url: http://{hub_ip}
+    description: Local IceHub Device
+    variables:
+      hub_ip:
+        default: 192.168.1.100
+        description: The local IP address of the ESP32 IceHub
+
+tags:
+  - name: System
+    description: Hub health and configuration
+  - name: Nodes
+    description: Node registry, telemetry, and control
+
+paths:
+  /api/system:
+    get:
+      tags:
+        - System
+      summary: Get system health
+      description: Returns memory, uptime, and NTP time status of the Hub.
+      responses:
+        '200':
+          description: System health object
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  uptime:
+                    type: integer
+                    description: Seconds since boot
+                  free_heap:
+                    type: integer
+                    description: Free memory in bytes
+                  time:
+                    type: string
+                    description: Local time or "Not Synchronized"
+
+  /api/config:
+    get:
+      tags:
+        - System
+      summary: Get hub configuration
+      description: Returns the current system configuration settings.
+      responses:
+        '200':
+          description: Configuration object
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemConfig'
+    patch:
+      tags:
+        - System
+      summary: Update hub configuration
+      description: Updates hostname, timezone, or MQTT parameters. Triggers a reboot.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SystemConfig'
+      responses:
+        '200':
+          description: Success
+
+  /api/config/mqtt_password:
+    put:
+      tags:
+        - System
+      summary: Update MQTT password
+      description: Separately update the MQTT password. Triggers a reboot.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                password:
+                  type: string
+      responses:
+        '200':
+          description: Success
+
+  /api/nodes:
+    get:
+      tags:
+        - Nodes
+      summary: List all nodes
+      description: Returns an array of all known nodes, including the Hub (ID 0).
+      responses:
+        '200':
+          description: Array of nodes
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/NodeInfo'
+
+  /api/nodes/{id}:
+    patch:
+      tags:
+        - Nodes
+      summary: Update node configuration
+      description: Rename a specific node.
+      parameters:
+        - $ref: '#/components/parameters/NodeIdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+      responses:
+        '200':
+          description: Success
+    delete:
+      tags:
+        - Nodes
+      summary: Unregister a node
+      description: Removes the node from the registry and clears its token.
+      parameters:
+        - $ref: '#/components/parameters/NodeIdParam'
+      responses:
+        '200':
+          description: Success
+
+  /api/nodes/{id}/capabilities:
+    get:
+      tags:
+        - Nodes
+      summary: Get node capabilities
+      description: Returns the raw JSON capability payload cached for the node.
+      parameters:
+        - $ref: '#/components/parameters/NodeIdParam'
+      responses:
+        '200':
+          description: Capabilities JSON object (varies by device type)
+
+  /api/nodes/{id}/sensors:
+    get:
+      tags:
+        - Nodes
+      summary: Get node telemetry
+      description: Returns the latest cached sensor data for the node.
+      parameters:
+        - $ref: '#/components/parameters/NodeIdParam'
+      responses:
+        '200':
+          description: Sensor data object
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SensorData'
+
+  /api/nodes/{id}/light:
+    post:
+      tags:
+        - Nodes
+      summary: Control node LEDs
+      description: Send brightness, color, or effect commands to a node.
+      parameters:
+        - $ref: '#/components/parameters/NodeIdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LightCommand'
+      responses:
+        '200':
+          description: Success
+        '400':
+          description: Bad request or invalid JSON
+
+  /api/nodes/{id}/logs:
+    get:
+      tags:
+        - Nodes
+      summary: Get node logs
+      description: Returns an array of recent log strings. Currently only supported for Hub (ID 0).
+      parameters:
+        - $ref: '#/components/parameters/NodeIdParam'
+      responses:
+        '200':
+          description: Array of log strings
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+        '501':
+          description: Remote logs not implemented yet
+
+  /api/nodes/{id}/reboot:
+    post:
+      tags:
+        - Nodes
+      summary: Reboot node
+      description: Sends a remote reboot command to the node via the radio transport.
+      parameters:
+        - $ref: '#/components/parameters/NodeIdParam'
+      responses:
+        '200':
+          description: Success
+
+components:
+  parameters:
+    NodeIdParam:
+      name: id
+      in: path
+      required: true
+      description: Numeric ID of the node (0 for Hub)
+      schema:
+        type: integer
+        minimum: 0
+        maximum: 254
+
+  schemas:
+    SystemConfig:
+      type: object
+      properties:
+        hostname:
+          type: string
+        tz:
+          type: string
+        mqtt_server:
+          type: string
+        mqtt_user:
+          type: string
+
+    NodeInfo:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        isOnline:
+          type: boolean
+        isConfigured:
+          type: boolean
+
+    SensorData:
+      type: object
+      properties:
+        valid:
+          type: boolean
+          description: True if data has been received since boot
+        stale:
+          type: boolean
+          description: True if last update was more than 5 minutes ago
+        temperature:
+          type: number
+          format: float
+          description: Temperature in Celsius
+        humidity:
+          type: number
+          format: float
+          description: Relative humidity percentage
+
+    LightCommand:
+      type: object
+      properties:
+        brightness:
+          type: integer
+          minimum: 0
+          maximum: 255
+          description: 0-255 brightness level
+        effect:
+          type: string
+          description: Name of the effect (e.g., 'RAINBOW')
+        color:
+          type: object
+          properties:
+            r:
+              type: integer
+            g:
+              type: integer
+            b:
+              type: integer

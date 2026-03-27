@@ -3,27 +3,28 @@
 
 
 #include <FastLED.h>
+#include "ice_service.h"
+#include "ice_protocol.h"
 #ifdef RED
 #undef RED
 #endif
 
 
-// Shared Enum (Used by Main for MQTT/Web, used by Effects for logic)
-enum DisplayMode { RAINBOW_PULSE, TRAIL_SPARK, PALETTE_WAVE, CONFETTI, JUGGLE, JITTER, CRACKLE, FIREWORK, BREATHE, SCANNER, TWINKLE, METEOR, MANUAL_SOLID, OFF };
-
-class IceEffects {
+class IceEffects : public IceService {
   public:
     struct Command {
+#ifdef DEVICE_ROLE_HUB
         const char* url;
         const char* label;
         const char* cssClass;
+#endif
         const char* mqttName; // e.g., "RAINBOW"
         DisplayMode mode;
     };
 
     IceEffects(CRGB* leds, int numLeds);
     void begin();
-    void run(); // Call this in loop()
+    void loop() override; // Call this in loop()
 
     // Control Interface
     void setMode(DisplayMode mode);
@@ -33,7 +34,7 @@ class IceEffects {
     const char* getEffectList(); // For Home Assistant Discovery
     void getCapabilitiesJSON(char* buffer, size_t maxLen);
     
-    static const int COMMAND_COUNT = 13;
+    static const int COMMAND_COUNT = 14;
     
     // Interface
     Command getCommand(int index);

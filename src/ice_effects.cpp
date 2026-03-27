@@ -14,6 +14,7 @@ const TProgmemPalette16 FrostColors_P PROGMEM = {
 };
 
 const IceEffects::Command _commandTable[] = {
+#ifdef DEVICE_ROLE_HUB
     {"/RAINBOW", "Rainbow Pulse", "rainbow", "RAINBOW", RAINBOW_PULSE},
     {"/TRAIL",   "Ice Trail",     "trail",   "TRAIL",   TRAIL_SPARK},
     {"/WAVE",    "Frost Wave",    "wave",    "WAVE",    PALETTE_WAVE},
@@ -26,7 +27,24 @@ const IceEffects::Command _commandTable[] = {
     {"/SCANNER", "Scanner",       "scanner", "SCANNER", SCANNER},
     {"/TWINKLE", "Twinkle",       "twinkle", "TWINKLE", TWINKLE},
     {"/METEOR",  "Meteor",        "meteor",  "METEOR",  METEOR},
+    {"/SOLID",   "Solid Color",   "solid",   "Solid",   MANUAL_SOLID},
     {"/OFF",     "Power Off",     "off",     "None",    OFF}
+#else
+    {"RAINBOW", RAINBOW_PULSE},
+    {"TRAIL",   TRAIL_SPARK},
+    {"WAVE",    PALETTE_WAVE},
+    {"CONFETTI",CONFETTI},
+    {"JUGGLE",  JUGGLE},
+    {"JITTER",  JITTER},
+    {"CRACKLE", CRACKLE},
+    {"FIREWORK",FIREWORK},
+    {"BREATHE", BREATHE},
+    {"SCANNER", SCANNER},
+    {"TWINKLE", TWINKLE},
+    {"METEOR",  METEOR},
+    {"Solid",   MANUAL_SOLID},
+    {"None",    OFF}
+#endif
 };
 
 IceEffects::IceEffects(CRGB* leds, int numLeds) 
@@ -51,7 +69,7 @@ void IceEffects::begin() {
     _currentPalette = FrostColors_P;
 }
 
-void IceEffects::run() {
+void IceEffects::loop() {
     // 60 FPS Animation Tick
     EVERY_N_MILLISECONDS(16) { 
         _gHue++; 
@@ -123,7 +141,7 @@ const char* IceEffects::getModeName() {
 
 const char* IceEffects::getEffectList() {
     // Returning a hardcoded string from the class that owns the modes
-    return "[\"RAINBOW\",\"TRAIL\",\"WAVE\",\"CONFETTI\",\"JUGGLE\",\"JITTER\",\"CRACKLE\",\"FIREWORK\",\"BREATHE\",\"SCANNER\",\"TWINKLE\",\"METEOR\"]";
+    return "[\"RAINBOW\",\"TRAIL\",\"WAVE\",\"CONFETTI\",\"JUGGLE\",\"JITTER\",\"CRACKLE\",\"FIREWORK\",\"BREATHE\",\"SCANNER\",\"TWINKLE\",\"METEOR\",\"Solid\",\"None\"]";
 }
 
 void IceEffects::getCapabilitiesJSON(char* buffer, size_t maxLen) {
@@ -144,16 +162,22 @@ void IceEffects::getCapabilitiesJSON(char* buffer, size_t maxLen) {
 
 IceEffects::Command IceEffects::getCommand(int index) {
     if (index >= 0 && index < COMMAND_COUNT) return _commandTable[index];
+#ifdef DEVICE_ROLE_HUB
     return {"", "", "", "", OFF};
+#else
+    return {"", OFF};
+#endif
 }
 
 bool IceEffects::parseCommand(const char* request) {
+#ifdef DEVICE_ROLE_HUB
     for (int i = 0; i < COMMAND_COUNT; i++) {
         if (strstr(request, _commandTable[i].url)) {
             setMode(_commandTable[i].mode);
             return true;
         }
     }
+#endif
     return false;
 }
 

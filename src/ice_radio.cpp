@@ -1,29 +1,62 @@
 #include "ice_radio.h"
 #include <SPI.h>
 
+#include "IceHubLog.h"
+extern IceHubLog iceLog;
+
+#ifndef RADIO_CHANNEL
+#define RADIO_CHANNEL 100
+#endif
+
 // Base address for the network. 
 // Hub listens on this address. Nodes write to this address.
 const uint64_t HUB_ADDRESS      = 0xE8E8F0F0E1LL;
 const uint64_t NODE_ADDRESS_BASE = 0xE8E8F0F000LL;
 
+#ifdef USE_RADIO_IRQ
+// 1. The flag must be volatile so the compiler knows it can change at any time
+volatile bool radio_interrupt_fired = false;
+
+// 2. The Interrupt Service Routine (ISR) triggered by the hardware pin.
+// We CANNOT use SPI (radio.read) inside here. We only set a flag.
+#if defined(ESP32) || defined(ESP8266)
+void IRAM_ATTR radioISR() {
+#else
+void radioISR() {
+#endif
+    radio_interrupt_fired = true;
+}
+#endif
+
+// Track initialization state to prevent browning out if hardware fails
+static bool _radio_initialized = false;
+
 IceRadio::IceRadio(uint8_t ce_pin, uint8_t csn_pin) : _radio(ce_pin, csn_pin), _nodeId(0) {}
 
 bool IceRadio::begin(uint8_t nodeId) {
     _nodeId = nodeId;
+    _radio_initialized = false;
     
     #ifdef ESP32
     // Explicitly initialize SPI with the user's pin mapping
     SPI.begin(RADIO_SCK_PIN, RADIO_MISO_PIN, RADIO_MOSI_PIN, RADIO_CSN_PIN);
     #endif
 
+    delay(50); // Allow NRF24 hardware to stabilize power before initializing
+
     if (!_radio.begin()) {
-        Serial.println(F("Radio hardware not responding!"));
+        iceLog.println(F("Radio hardware not responding!"));
         return false;
     }
 
+    iceLog.println(F("Configuring radio settings..."));
+    iceLog.printf(F("Channel: %d\n"), RADIO_CHANNEL);
+    iceLog.println(F("Data Rate: 1Mbps"));
+    iceLog.println(F("PALevel: LOW"));
+
     _radio.setPALevel(RF24_PA_LOW); // Low power to reduce interference/heat
     _radio.setDataRate(RF24_1MBPS);
-    _radio.setChannel(100);         // Channel 100 (Above most WiFi)
+    _radio.setChannel(RADIO_CHANNEL);
     _radio.enableDynamicPayloads();
     _radio.enableAckPayload();      // Allow Hub to send data back in ACK
     
@@ -36,14 +69,40 @@ bool IceRadio::begin(uint8_t nodeId) {
     }
 
     _radio.startListening();
-    Serial.print(F("Radio initialized. Node ID: "));
-    Serial.println(_nodeId);
+
+#ifdef USE_RADIO_IRQ
+    pinMode(RADIO_IRQ_PIN, INPUT_PULLUP);
+    // Note: NRF24 natively pulls IRQ LOW on events, so we trigger on FALLING
+    attachInterrupt(digitalPinToInterrupt(RADIO_IRQ_PIN), radioISR, FALLING);
+    // Tell the radio to ONLY pull the IRQ pin low for RX (data received) events
+    _radio.maskIRQ(1, 1, 0); 
+#endif
+
+    iceLog.printf(F("Radio initialized. Node ID: %d\n"), _nodeId);
+
+    #ifdef RADIO_DEBUG
+    _radio.printDetails();
+    #endif
+        
+    _radio_initialized = true;
     return true;
 }
 
-void IceRadio::update() {
+void IceRadio::loop() {
+    if (!_radio_initialized) return;
 
-    if (_radio.available()) {
+#ifdef USE_RADIO_IRQ
+    // If the interrupt hasn't fired, we skip the slow SPI bus check entirely!
+    if (!radio_interrupt_fired) return;
+    
+    // Acknowledge the interrupt
+    radio_interrupt_fired = false;
+    _radio.clearStatusFlags(); // Clear the NRF24 hardware interrupt register
+#endif
+
+    // Process all available packets in the queue
+    // (Changed from 'if' to 'while' to drain the queue when using interrupts)
+    while (_radio.available()) {
         uint8_t len = _radio.getDynamicPayloadSize();
         // Accept any valid packet size (Header is 3 bytes, Max is 32)
         if (len >= 3 && len <= 32) {
@@ -58,62 +117,20 @@ void IceRadio::update() {
             uint8_t dump[32];
             _radio.read(dump, len);
             // Use '\r' to return to start of line and overwrite (prevents scrolling spam)
-            Serial.print(F("\r[Radio] Noise/Invalid Packet (len="));
-            Serial.print(len);
-            Serial.print(F(", Expected="));
-            Serial.print(sizeof(IcePacket));
-            Serial.println(F(")   ")); // Use println to persist error log
+            iceLog.printf(F("\r[Radio] Noise/Invalid Packet (len=%d, Expected=%d)   \n"), len, sizeof(IcePacket));
         }
     } 
 }
 
 bool IceRadio::send(uint8_t targetId, const IcePacket& packet) {
+    if (!_radio_initialized) return false;
+
     _radio.stopListening();
     uint64_t addr = (targetId == 0) ? HUB_ADDRESS : (NODE_ADDRESS_BASE + targetId);
     _radio.openWritingPipe(addr);
     bool result = _radio.write(&packet, sizeof(IcePacket));
     _radio.startListening();
     return result;
-}
-
-bool IceRadio::sendMultipart(uint8_t targetId, uint16_t type, const void* data, size_t length) {
-    const uint8_t* bytes = (const uint8_t*)data;
-    // Calculate segments: (length + 26) / 27 is integer ceil(length/27)
-    uint16_t totalSegments = (length + 26) / 27; 
-    
-    // 1. Send Header (Segment 0)
-    IcePacket header;
-    memset(&header, 0, sizeof(header));
-    header.targetID = targetId;
-    header.senderID = _nodeId;
-    header.msgType = PACKET_MULTIPART;
-    header.payload.multipart.segmentId = 0;
-    
-    // Store total size in first 2 bytes of data for the receiver to allocate
-    header.payload.multipart.header.totalSize = (uint16_t)length;
-    header.payload.multipart.header.type = type;
-    
-    if (!send(targetId, header)) return false;
-    
-    // 2. Send Data Segments
-    for (uint16_t i = 1; i <= totalSegments; i++) {
-        IcePacket chunk;
-        memset(&chunk, 0, sizeof(chunk));
-        chunk.targetID = targetId;
-        chunk.senderID = _nodeId;
-        chunk.msgType = PACKET_MULTIPART;
-        chunk.payload.multipart.segmentId = i;
-        
-        size_t offset = (i - 1) * 27;
-        size_t chunkLen = length - offset;
-        if (chunkLen > 27) chunkLen = 27;
-        
-        memcpy(chunk.payload.multipart.data, bytes + offset, chunkLen);
-        
-        if (!send(targetId, chunk)) return false;
-        delay(5); // Small delay to prevent flooding the receiver's buffer
-    }
-    return true;
 }
 
 void IceRadio::onPacketReceived(RadioCallback callback) {
